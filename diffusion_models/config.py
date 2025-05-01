@@ -27,6 +27,7 @@ class TrainingConfig:
     
     # Model configuration
     model: str = "unet_notebook"  # Type of model to use (e.g., "unet_notebook")
+    cross_attention_dim: int = 512  # Total dim: attribute + segmentation
     
     # Training configuration
     run_name: Optional[str] = None  # Name for the run. To be used for WandB run name and output directory name
@@ -55,10 +56,11 @@ class TrainingConfig:
     sample_attributes: Optional[torch.Tensor] = None  # Attribute vectors for sample generation
     is_conditional: bool = False  # Whether to use conditional generation
     attribute_file: Optional[str] = None  # Path to the attribute labels file
+    segmentation_dir: Optional[str] = None  # Directory with segmentation masks
     num_attributes: int = 40  # Number of attributes (e.g., 40 for CelebA)
     use_embedding_loss: bool = False  # Whether to calculate embedding loss
     embedding_loss_lambda: float = 1.0  # Lambda for embedding loss
-
+    
     # Grid visualization parameters
     grid_attribute_indices: Optional[List[int]] = None  # Specific attributes for grid visualization
     grid_num_samples: int = 16  # Number of samples in the visualization grid
@@ -132,6 +134,8 @@ def parse_args() -> TrainingConfig:
     # Add arguments for each config field with help text
     parser.add_argument("--model", type=str, default=defaults["model"],
                     help="Model to use")
+    parser.add_argument("--cross-attention-dim", type=int, default=defaults["cross_attention_dim"],
+                    help="Dimensionality of encoder_hidden_states (e.g. attr + seg)")
     parser.add_argument("--run-name", type=str, default=defaults["run_name"],
                     help="Name for the run. Used for WandB and output directory naming")
     parser.add_argument("--image-size", type=int, default=defaults["image_size"],
@@ -200,6 +204,7 @@ def parse_args() -> TrainingConfig:
                     help="Noise scheduler type to use")
     parser.add_argument("--num-train-timesteps", type=int, default=defaults["num_train_timesteps"],
                     help="Number of diffusion timesteps used during training")
+    
 
 
 

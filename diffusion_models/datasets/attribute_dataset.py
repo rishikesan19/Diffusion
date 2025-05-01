@@ -19,21 +19,30 @@ class AttributeDataset(Dataset):
         attribute_label_path (str): Path to the attribute label file
         image_size (int): Size to resize images to (both height and width)
         transform (Optional[transforms.Compose]): Optional transforms to apply to images
+        segmentation_dir (Optional[str]): Path to the segmentation masks (RGB images)
     """
     
     def __init__(
         self,
         image_dir: str,
         attribute_label_path: str,
+        segmentation_dir: Optional[str] = None,
         image_size: int = 256,
         transform: Optional[transforms.Compose] = None
     ):
         self.image_dir = image_dir
+        self.segmentation_dir = segmentation_dir
         self.transform = transform or transforms.Compose([
             transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.LANCZOS),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ])
+
+        # Segmentation-specific transform
+        self.segmentation_transform = transforms.Compose([
+            transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.NEAREST),
+            transforms.ToTensor()
+        ]) if segmentation_dir else None
         
         # Get list of existing images in the directory
         existing_images = set(f"{f}" for f in os.listdir(image_dir) if f.endswith('.jpg'))
@@ -45,38 +54,31 @@ class AttributeDataset(Dataset):
         
         # First read the headers
         with open(attribute_label_path, 'r') as f:
-            # Skip first line (number of images)
-            f.readline()
-            # Get header line
+            f.readline()  # Skip first line
             header_line = f.readline().strip()
-            # Get the attribute names
             attribute_names = header_line.split()
         
         # Now read the data, skipping the first two lines
         self.attributes_df = pd.read_csv(
             attribute_label_path,
-            skiprows=2,  # Skip both the count line and header line
-            sep='\s+',  # Use regex for whitespace
-            header=None,  # No header since we already read it
-            names=['image_id'] + attribute_names,  # Use our own column names
-            dtype=str  # Read all columns as strings initially
+            skiprows=2,
+            sep=r'\s+',
+            header=None,
+            names=['image_id'] + attribute_names,
+            dtype=str
         )
-        # Ensure image_id has .jpg extension
+
         self.attributes_df['image_id'] = self.attributes_df['image_id'].apply(
             lambda x: f"{x}.jpg" if not x.endswith('.jpg') else x
         )
-        # Convert attribute columns to float32
+
         for col in self.attributes_df.columns[1:]:
-            # First convert to numeric
             self.attributes_df[col] = pd.to_numeric(self.attributes_df[col], errors='coerce')
-            # Then convert -1 to 0 for multi-hot vector
             self.attributes_df[col] = self.attributes_df[col].map({-1: 0, 1: 1})
-        
-        # Filter the dataframe to only include rows where the image exists
+
         self.attributes_df = self.attributes_df[self.attributes_df['image_id'].isin(existing_images)]
-        
+
         if len(self.attributes_df) == 0:
-            # Print more debugging information
             print("Debugging information:")
             print(f"Total images in attribute file: {len(self.attributes_df)}")
             print(f"Sample of image_ids in attribute file before filtering:")
@@ -84,7 +86,6 @@ class AttributeDataset(Dataset):
             print("Sample of image_ids in directory:")
             print(list(existing_images)[:5])
             
-            # Check for any potential mismatches
             sample_attr_ids = set(self.attributes_df['image_id'].head().tolist())
             sample_dir_ids = set(list(existing_images)[:5])
             print("Checking for exact matches:")
@@ -98,45 +99,50 @@ class AttributeDataset(Dataset):
                 f"First few images in directory: {list(existing_images)[:5]}\n"
                 f"First few images in attribute file: {list(self.attributes_df['image_id'])[:5] if len(self.attributes_df) > 0 else 'No images found'}"
             )
-        
-        # Get the attribute names (excluding the image_id column)
+
         self.attribute_names = self.attributes_df.columns[1:].tolist()
-        
         print(f"Final dataset size: {len(self.attributes_df)} images with attributes out of {len(existing_images)} images in directory")
-        
+
     def __len__(self) -> int:
         """Return the total number of samples in the dataset."""
         return len(self.attributes_df)
     
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> dict:
         """Get a sample from the dataset.
         
         Args:
             idx (int): Index of the sample to get
             
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
-                - The image tensor (C, H, W)
-                - The attribute labels tensor (N,) where N is the number of attributes
+            dict: {
+                'image': image tensor (C, H, W),
+                'attribute': attribute tensor (N,),
+                'segmentation': segmentation tensor (optional)
+            }
         """
-        # Get the image filename and attributes for this index
         row = self.attributes_df.iloc[idx]
         image_id = row['image_id']
-        
-        # Construct the full image path
         image_path = os.path.join(self.image_dir, image_id)
-        
-        # Load and transform the image
+
         image = Image.open(image_path).convert('RGB')
         if self.transform:
             image = self.transform(image)
-            
-        # Get the attribute labels (excluding the image_id column)
-        # Convert to numpy array first, then to tensor
+
         attributes = torch.from_numpy(row[1:].values.astype(np.float32))
-        
-        return image, attributes
-    
+
+        sample = {
+            "image": image,
+            "attribute": attributes
+        }
+
+        if self.segmentation_dir:
+            seg_path = os.path.join(self.segmentation_dir, image_id)
+            segmentation = Image.open(seg_path).convert("RGB")
+            segmentation = self.segmentation_transform(segmentation)
+            sample["segmentation"] = segmentation
+
+        return sample
+
     def get_attribute_names(self) -> List[str]:
         """Get the list of attribute names.
         
@@ -144,6 +150,7 @@ class AttributeDataset(Dataset):
             List[str]: List of attribute names
         """
         return self.attribute_names
+        
 
 # DEBUGGING
 if __name__ == "__main__":

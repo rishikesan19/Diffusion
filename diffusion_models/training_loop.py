@@ -27,6 +27,7 @@ def train_loop(
     grid_attributes=None,
     val_attributes=None,
     attribute_embedder=None,
+    segmentation_encoder=None,
     vae=None,
     ema=None
 ):
@@ -45,9 +46,11 @@ def train_loop(
         grid_attributes: Optional tensor of attributes for grid visualization
         val_attributes: Optional tensor of attributes for FID validation
         attribute_embedder: Optional module to project attributes to hidden states
+        segmentation_encoder: Optional module to encode segmentation maps
         vae: Optional VAE model
         ema: Optional EMA model
     """
+
     # Initialize accelerator and tensorboard logging
     accelerator = Accelerator(
         mixed_precision=config.mixed_precision,
@@ -73,17 +76,19 @@ def train_loop(
             ema.load_state_dict(torch.load(ema_path, map_location="cpu"))
 
     # Prepare everything
+    prepare_args = [model, optimizer, train_dataloader, lr_scheduler]
     if is_conditional and attribute_embedder is not None:
-        model, optimizer, train_dataloader, lr_scheduler, attribute_embedder = accelerator.prepare(
-            model, optimizer, train_dataloader, lr_scheduler, attribute_embedder
-        )
+        prepare_args.append(attribute_embedder)
+
+    prepared = accelerator.prepare(*prepare_args)
+    if is_conditional and attribute_embedder is not None:
+        model, optimizer, train_dataloader, lr_scheduler, attribute_embedder = prepared
     else:
-        model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            model, optimizer, train_dataloader, lr_scheduler
-        )
+        model, optimizer, train_dataloader, lr_scheduler = prepared
+
     if vae is not None:
         vae = accelerator.prepare(vae)
-    
+
     if val_dataloader:
         val_dataloader = accelerator.prepare(val_dataloader)
 
@@ -102,10 +107,16 @@ def train_loop(
         for step, batch in enumerate(train_dataloader):
             # Handle both conditional and unconditional cases
             if is_conditional:
-                clean_images, attributes = batch
+                if isinstance(batch, dict):
+                    clean_images = batch["image"]
+                    attributes = batch["attribute"]
+                    segmentations = batch.get("segmentation")
+                else:
+                    clean_images, attributes = batch
+                    segmentations = None
             else:
                 clean_images = batch["images"]
-            
+
             # Sample noise to add to the images
             bs = clean_images.shape[0]
 
@@ -135,35 +146,29 @@ def train_loop(
             with accelerator.accumulate(model):
                 # Predict the noise residual
                 if is_conditional and attribute_embedder is not None:
-                    # Project attributes to hidden states
                     encoder_hidden_states = attribute_embedder(attributes)
-                    # For conditional model, pass projected attributes as encoder_hidden_states
-                    noise_pred = model(noisy_images, timesteps, encoder_hidden_states=encoder_hidden_states, return_dict=False)[0]
+                    # Combine segmentation features if available
+                    if segmentation_encoder is not None and segmentations is not None:
+                        seg_feats = segmentation_encoder(segmentations.to(clean_images.device))
+                        encoder_hidden_states = torch.cat([encoder_hidden_states, seg_feats], dim=-1)
+
+                    noise_pred = model(
+                        noisy_images, timesteps, encoder_hidden_states=encoder_hidden_states, return_dict=False
+                    )[0]
                 else:
                     # For unconditional model
                     noise_pred = model(noisy_images, timesteps, return_dict=False)[0]
 
                 # Calculate loss
                 if is_conditional and config.use_embedding_loss:
-                    # Squeeze the sequence dimension from encoder_hidden_states
-                    encoder_hidden_states = encoder_hidden_states.squeeze(1)  # Shape: (batch_size, hidden_dim)
-                    # print(f"Using embedding loss")
-                    # print(f"encoder_hidden_states: {encoder_hidden_states.shape}")
-                    # print(f"attributes: {attributes.shape}")
+                    encoder_hidden_states = encoder_hidden_states.squeeze(1)
                     embedding_loss = info_nce(encoder_hidden_states, attributes)
                     diffusion_loss = F.mse_loss(noise_pred, noise)
-                    # Loss = diffusion loss + lambda * embedding loss
                     loss = diffusion_loss + config.embedding_loss_lambda * embedding_loss
-                    # print(f"embedding_loss: {embedding_loss.item()}")
-                    # print(f"diffusion_loss: {diffusion_loss.item()}")
-                    # print(f"loss: {loss.item()}")
-                    
                 else:
-                    # Loss = diffusion loss
                     loss = F.mse_loss(noise_pred, noise)
 
                 accelerator.backward(loss)
-
                 accelerator.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 if ema:

@@ -2,7 +2,7 @@
 
 from datasets import load_dataset
 from torch.utils.data import DataLoader
-from typing import Tuple
+from typing import Tuple , Optional
 from torchvision import transforms
 import os
 
@@ -96,6 +96,7 @@ def create_attribute_dataloader(
     num_workers: int = 4,
     shuffle: bool = True,
     image_size: int = 256,
+    segmentation_dir: Optional[str] = None
 ) -> DataLoader:
     """Create a DataLoader for the attribute dataset.
     
@@ -106,6 +107,7 @@ def create_attribute_dataloader(
         num_workers (int): Number of worker processes for data loading
         shuffle (bool): Whether to shuffle the data
         image_size (int): Size to resize images to (both height and width)
+        segmentation_dir (Optional[str]): Directory containing segmentation masks
         
     Returns:
         DataLoader: DataLoader for the attribute dataset
@@ -116,6 +118,7 @@ def create_attribute_dataloader(
     dataset = AttributeDataset(
         image_dir=image_dir,
         attribute_label_path=attribute_label_path,
+        segmentation_dir=segmentation_dir,
         image_size=image_size,
         transform=preprocess
     )

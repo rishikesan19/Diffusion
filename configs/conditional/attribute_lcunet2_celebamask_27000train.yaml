@@ -3,11 +3,11 @@ model: lc_unet_2
 run_name: attribute_lcunet2_celebamask_27000train
 
 # Training configuration
-image_size: 256
+image_size: 128
 train_batch_size: 16
 eval_batch_size: 16
-num_epochs: 100
-learning_rate: 2e-4
+num_epochs: 1000
+learning_rate: 2e-5
 weight_decay: 1e-2
 lr_warmup_steps: 5000
 gradient_accumulation_steps: 1
@@ -15,8 +15,8 @@ seed: 42
 mixed_precision: "no"
 
 # Save and logging configuration
-save_image_epochs: 5
-save_model_epochs: 5
+save_image_epochs: 100
+save_model_epochs: 100
 root_output_dir: /scratch/group_5/diffusion_checkpoints
 
 # Dataset configuration
@@ -33,12 +33,12 @@ use_embedding_loss: false
 embedding_loss_lambda: null
 
 # WandB configuration
-use_wandb: false
+use_wandb: true
 wandb_project: EEEM068_Diffusion_Models
 wandb_entity: tin-hoang
 
 # Model architecture configuration
-use_ema: false
+use_ema: true
 use_scale_shift_norm: false
 
 # Conditional generation configuration

@@ -44,10 +44,10 @@ def create_model(config: TrainingConfig) -> UNet2DConditionModel:
         ),
         
         # Architecture parameters
-        block_out_channels=(128, 256, 512, 512),  # Channel dimensions per block
-        layers_per_block=2,                       # Two ResNet layers per block for better capacity
-        cross_attention_dim=256,                  # Dimension of cross-attention features
-        attention_head_dim=8,                     # Size of attention heads
+        block_out_channels=(128, 256, 512, 512),        # Channel dimensions per block
+        layers_per_block=2,                             # Two ResNet layers per block for better capacity
+        cross_attention_dim=config.cross_attention_dim, # Dimension of cross-attention features
+        attention_head_dim=8,                           # Size of attention heads
         
         # Model configuration
         use_linear_projection=True,               # Memory-efficient attention
