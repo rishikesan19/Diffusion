@@ -191,7 +191,7 @@ def generate_and_calculate_fid_attributes(
                 batch_size=batch_size,
                 generator=generator,
                 num_inference_steps=num_train_timesteps,
-                class_labels=curr_attributes,
+                attributes=curr_attributes,
                 output_type="pt"  # Return PyTorch tensors
             )
             sample_tensors = output.images.to(device)
@@ -218,3 +218,73 @@ def generate_and_calculate_fid_attributes(
     # Calculate and return FID score
     fid_score = float(fid.compute())
     return fid_score
+
+def generate_and_calculate_fid_attr_seg(
+    pipeline: DiffusionPipeline,
+    val_dataloader: DataLoader,
+    device: torch.device,
+    preprocess,
+    num_train_timesteps: int,
+    num_samples: int,
+    attributes: torch.Tensor,
+) -> float:
+    """Generate images with attribute and segmentation conditioning and calculate FID score.
+
+    Args:
+        pipeline: The conditional diffusion pipeline
+        val_dataloader: Validation dataloader
+        device: Device to use for generation
+        preprocess: Preprocessing transform
+        num_train_timesteps: Number of timesteps for inference
+        num_samples: Number of images to generate
+        attributes: Tensor of shape (num_samples, num_attributes)
+
+    Returns:
+        FID score between generated and real images
+    """
+    from torchmetrics.image.fid import FrechetInceptionDistance
+
+    pipeline = pipeline.to(device)
+    fid = FrechetInceptionDistance(normalize=True).to(device)
+
+    with torch.no_grad():
+        remaining_samples = num_samples
+        sample_idx = 0
+
+        while remaining_samples > 0:
+            val_batch_size = val_dataloader.batch_size or 16
+            batch_size = min(val_batch_size, remaining_samples)
+            curr_attributes = attributes[sample_idx:sample_idx + batch_size]
+
+            # Generate segmentation from validation batch
+            for i, val_batch in enumerate(val_dataloader):
+                if isinstance(val_batch, dict):
+                    segmentation = val_batch.get("segmentation", None)
+                    break  # Take the first batch with segmentation
+
+            segmentation = segmentation[:batch_size].to(device)
+
+            generator = torch.Generator(device=device).manual_seed(sample_idx)
+            output = pipeline(
+                attributes=curr_attributes.to(device),
+                segmentation=segmentation,
+                batch_size=batch_size,
+                generator=generator,
+                num_inference_steps=num_train_timesteps,
+                output_type="pt",
+            )
+            sample_tensors = output["sample"].to(device)
+
+            sample_tensors = (sample_tensors * 0.5 + 0.5).clamp(0, 1)
+            fid.update(sample_tensors, real=False)
+
+            sample_idx += batch_size
+            remaining_samples -= batch_size
+
+        # Real images
+        for batch in val_dataloader:
+            real_images = batch["image"].to(device)
+            real_images = (real_images * 0.5 + 0.5).clamp(0, 1)
+            fid.update(real_images, real=True)
+
+    return float(fid.compute())

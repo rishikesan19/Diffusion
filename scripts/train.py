@@ -18,9 +18,6 @@ from diffusion_models.utils.attribute_utils import (
     create_multi_hot_attributes
 )
 
-from diffusion_models.models.conditional.segmentation_encoder import SegmentationEncoder
-
-
 
 def main():
     # Parse command line arguments and get config
@@ -38,8 +35,7 @@ def main():
     print("=" * 80)
 
     # Create model and noise scheduler
-    model, attribute_embedder, vae, segmentation_encoder = None, None, None, None
-
+    model, attribute_embedder, vae = None, None, None
 
     # Load model and any related components
     if config.model == "unet_notebook":
@@ -102,22 +98,10 @@ def main():
         vae = vae.to(config.device)
         vae.eval()
         vae.requires_grad_(False)
-        # Create segmentation encoder if using segmentation
-        segmentation_encoder = None
-        if config.segmentation_dir:
-            from diffusion_models.models.conditional.segmentation_encoder import SegmentationEncoder
-            segmentation_encoder = SegmentationEncoder()
-            segmentation_encoder = segmentation_encoder.to(config.device)
-
-        # Adjust attribute embedding size based on segmentation
-        attr_dim = config.cross_attention_dim
-        if segmentation_encoder is not None:
-            attr_dim = config.cross_attention_dim - segmentation_encoder.output_dim  # Usually 256 - 256 = 256
-
         attribute_embedder = AttributeEmbedder(
             input_dim=config.num_attributes,
-            hidden_dim=attr_dim
-)
+            hidden_dim=128
+        )
 
     elif config.model == "lc_unet_3_vqvae":
         from diffusion_models.models.conditional.lc_unet_3_vqvae import create_model
@@ -158,15 +142,8 @@ def main():
     else:
         raise ValueError(f"Invalid model type: {config.model}")
 
-
-    if config.segmentation_dir:
-        print(f"Using segmentation encoder for conditioning from: {config.segmentation_dir}")
-        segmentation_encoder = SegmentationEncoder(device=config.device)
-
-
     # Setup Exponential Moving Average
     ema = EMA(model, beta=0.9999, update_after_step=0, update_every=1) if config.use_ema else None
-
 
     if config.use_wandb:
         wandb.finish()
@@ -176,14 +153,13 @@ def main():
             name=config.run_name,
             config=config,
         )
-        wandb.run.log_code(
-            root=".",
-            include_fn=lambda path: (
-                path.endswith(".py") or path.endswith(".ipynb") or path.endswith(".sh")
-            ),
-            exclude_fn=lambda path: ".venv" in path
-        )
-
+        # wandb.run.log_code(
+        #     root=".",
+        #     include_fn=lambda path: (
+        #         path.endswith(".py") or path.endswith(".ipynb") or path.endswith(".sh")
+        #     ),
+        # #     exclude_fn=lambda path: ".venv" in path
+        # )
 
     # Setup training dataset and preprocessing
     if config.is_conditional:
@@ -204,7 +180,6 @@ def main():
             image_size=config.image_size,
             shuffle=True
         )
-
 
     # Setup validation dataset
     val_dataloader = None
@@ -229,7 +204,6 @@ def main():
     else:
         print("[Warning] No validation directory provided, skipping validation during training.")
 
-
     # Create noise scheduler based on config
     if config.scheduler_type == "ddim":
         noise_scheduler = create_ddim_scheduler(
@@ -243,7 +217,6 @@ def main():
         print("\nUsing DDPM scheduler for training")
     else:
         raise ValueError(f"Invalid scheduler type: {config.scheduler_type}")
-
 
     # Optimizer and scheduler
     if config.is_conditional and attribute_embedder is not None:
@@ -264,7 +237,6 @@ def main():
         num_warmup_steps=config.lr_warmup_steps,
         num_training_steps=(len(train_dataloader) * config.num_epochs)
     )
-
 
     # Prepare attribute vectors
     grid_attributes = None
@@ -289,7 +261,6 @@ def main():
                 num_attributes=config.num_attributes
             )
 
-
     # Move attributes to device
     if val_attributes is not None:
         val_attributes = val_attributes.to(config.device)
@@ -299,7 +270,6 @@ def main():
         grid_attributes = grid_attributes.to(config.device)
         print("grid_attributes shape: ", grid_attributes.shape)
         print("grid_attributes first item: ", grid_attributes[0])
-
 
     # Start training
     train_loop(
@@ -315,16 +285,13 @@ def main():
         grid_attributes=grid_attributes,
         val_attributes=val_attributes,
         attribute_embedder=attribute_embedder,
-        segmentation_encoder=segmentation_encoder,
         vae=vae,
         ema=ema
     )
 
-
     # Finish wandb
     if config.use_wandb:
         wandb.finish()
-
 
 
 if __name__ == "__main__":

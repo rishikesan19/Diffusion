@@ -1,10 +1,10 @@
 # Model configuration
 model: lc_unet_2
-run_name: attribute_lcunet2_celebamask_27000train
+run_name: segcond_lcunet2_celebamask_2700train
 
 # Training configuration
 image_size: 128
-train_batch_size: 16
+train_batch_size: 4
 eval_batch_size: 16
 num_epochs: 1000
 learning_rate: 2e-5
@@ -15,16 +15,33 @@ seed: 42
 mixed_precision: "no"
 
 # Save and logging configuration
-save_image_epochs: 100
-save_model_epochs: 100
+save_image_epochs: 2
+save_model_epochs: 2
 root_output_dir: /scratch/group_5/diffusion_checkpoints
 
 # Dataset configuration
-train_dir: data/CelebA-HQ-split/train_27000
-val_dir: null
-val_n_samples: null
-dataset_name: celebamask_hq_256_27000train
+train_dir: data/CelebAMask-HQ-SPLIT/images_and_masks/train/images
+val_dir: data/CelebAMask-HQ-SPLIT/images_and_masks/test/images
+val_n_samples: 300
+dataset_name: celebamask_hq_128_2700train_300test
 num_workers: 4
+
+# Segmentation conditioning
+is_conditional: true
+conditioning_type: segmentation
+cross_attention_dim: 128
+segmentation_dir: data/CelebAMask-HQ-SPLIT/images_and_masks/train/masks
+segmentation_encoder: segformer
+segmentation_encoder_checkpoint: nvidia/segformer-b0-finetuned-ade-512-512
+
+
+
+# Attribute conditioning
+attribute_file: data/CelebAMask-HQ-SPLIT/annotations/attribute_train.txt
+num_attributes: 40
+grid_attribute_indices: [35]  # Wearing Hat
+grid_num_samples: 16
+grid_sample_random_remaining_indices: true
 
 # Diffusion configuration
 num_train_timesteps: 1000
@@ -40,11 +57,3 @@ wandb_entity: tin-hoang
 # Model architecture configuration
 use_ema: true
 use_scale_shift_norm: false
-
-# Conditional generation configuration
-is_conditional: true
-attribute_file: data/CelebA-HQ-split/CelebAMask-HQ-attribute-anno.txt
-num_attributes: 40
-grid_attribute_indices: [35]  # Wearing Hat
-grid_num_samples: 16
-grid_sample_random_remaining_indices: true

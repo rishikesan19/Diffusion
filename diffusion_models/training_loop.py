@@ -9,10 +9,9 @@ from diffusers import DDPMPipeline, VQModel
 import wandb
 
 from diffusion_models.utils.generation import generate_grid_images, generate_grid_images_attributes
-from diffusion_models.utils.metrics import generate_and_calculate_fid, generate_and_calculate_fid_attributes
+from diffusion_models.utils.metrics import generate_and_calculate_fid, generate_and_calculate_fid_attributes, generate_and_calculate_fid_attr_seg
 from diffusion_models.pipelines.attribute_pipeline import AttributeDiffusionPipeline
 from diffusion_models.losses.info_nce import info_nce
-
 
 def train_loop(
     config, 
@@ -27,7 +26,6 @@ def train_loop(
     grid_attributes=None,
     val_attributes=None,
     attribute_embedder=None,
-    segmentation_encoder=None,
     vae=None,
     ema=None
 ):
@@ -46,7 +44,6 @@ def train_loop(
         grid_attributes: Optional tensor of attributes for grid visualization
         val_attributes: Optional tensor of attributes for FID validation
         attribute_embedder: Optional module to project attributes to hidden states
-        segmentation_encoder: Optional module to encode segmentation maps
         vae: Optional VAE model
         ema: Optional EMA model
     """
@@ -68,6 +65,7 @@ def train_loop(
     # Initialize best FID score tracking
     best_fid_score = float('inf')
     best_epoch = 0
+
     # Load EMA weights if resuming training
     if ema:
         ema_path = os.path.join(config.output_dir, "ema.pt")
@@ -75,7 +73,7 @@ def train_loop(
             print(f"[INFO] Loading EMA from {ema_path}")
             ema.load_state_dict(torch.load(ema_path, map_location="cpu"))
 
-    # Prepare everything
+    # Prepare model, optimizer, dataloaders with accelerator
     prepare_args = [model, optimizer, train_dataloader, lr_scheduler]
     if is_conditional and attribute_embedder is not None:
         prepare_args.append(attribute_embedder)
@@ -101,6 +99,7 @@ def train_loop(
     for epoch in range(config.num_epochs):
         progress_bar = tqdm(total=len(train_dataloader), disable=not accelerator.is_local_main_process)
         progress_bar.set_description(f"Epoch {epoch}")
+
         if vae is not None:
             vae.eval()  # VAE is pretrained, no training needed
 
@@ -133,7 +132,7 @@ def train_loop(
                         latents = vae.encode(clean_images).latents  # (batch_size, 4, 32, 32)
                     else:
                         # AutoencoderKL
-                        latents = vae.encode(clean_images).latent_dist.sample()  # (batch_size, 4, 32, 32)
+                        latents = vae.encode(clean_images).latent_dist.sample()   # (batch_size, 4, 32, 32)
                     latents = latents * vae.config.scaling_factor
                 latents = latents.to(clean_images.device)
                 noise = torch.randn_like(latents).to(latents.device)
@@ -146,14 +145,14 @@ def train_loop(
             with accelerator.accumulate(model):
                 # Predict the noise residual
                 if is_conditional and attribute_embedder is not None:
+                    # Project attributes to hidden states
                     encoder_hidden_states = attribute_embedder(attributes)
-                    # Combine segmentation features if available
-                    if segmentation_encoder is not None and segmentations is not None:
-                        seg_feats = segmentation_encoder(segmentations.to(clean_images.device))
-                        encoder_hidden_states = torch.cat([encoder_hidden_states, seg_feats], dim=-1)
-
                     noise_pred = model(
-                        noisy_images, timesteps, encoder_hidden_states=encoder_hidden_states, return_dict=False
+                        noisy_images,
+                        timesteps,
+                        encoder_hidden_states=encoder_hidden_states,
+                        segmentation=segmentations.to(noisy_images.device) if segmentations is not None else None,
+                        return_dict=False
                     )[0]
                 else:
                     # For unconditional model
@@ -161,11 +160,20 @@ def train_loop(
 
                 # Calculate loss
                 if is_conditional and config.use_embedding_loss:
-                    encoder_hidden_states = encoder_hidden_states.squeeze(1)
+                    # Squeeze the sequence dimension from encoder_hidden_states
+                    encoder_hidden_states = encoder_hidden_states.squeeze(1)  # Shape: (batch_size, hidden_dim)
+                    # print(f"Using embedding loss")
+                    # print(f"encoder_hidden_states: {encoder_hidden_states.shape}")
+                    # print(f"attributes: {attributes.shape}")
                     embedding_loss = info_nce(encoder_hidden_states, attributes)
                     diffusion_loss = F.mse_loss(noise_pred, noise)
+                    # Loss = diffusion loss + lambda * embedding loss
                     loss = diffusion_loss + config.embedding_loss_lambda * embedding_loss
+                    # print(f"embedding_loss: {embedding_loss.item()}")
+                    # print(f"diffusion_loss: {diffusion_loss.item()}")
+                    # print(f"loss: {loss.item()}")
                 else:
+                    # Loss = diffusion loss
                     loss = F.mse_loss(noise_pred, noise)
 
                 accelerator.backward(loss)
@@ -207,11 +215,11 @@ def train_loop(
                     else:
                         # Conditional pipeline with direct pixel-space
                         raise NotImplementedError("Pixel-space conditional generation not supported yet")
-                    
+
                     # Move grid attributes to correct device
                     grid_attributes = grid_attributes.to(accelerator.device)
                     _, image_grid = generate_grid_images_attributes(
-                        config, epoch, pipeline, 
+                        config, epoch, pipeline,
                         attributes=grid_attributes
                     )
                 else:
@@ -220,33 +228,49 @@ def train_loop(
                         pipeline = DDPMPipeline(unet=accelerator.unwrap_model(ema.ema_model), scheduler=noise_scheduler)
                     else:
                         pipeline = DDPMPipeline(unet=accelerator.unwrap_model(model), scheduler=noise_scheduler)
+
+                    # Move the pipeline to the accelerator device.
+                    pipeline = pipeline.to(accelerator.device)
+
                     # For unconditional model
                     _, image_grid = generate_grid_images(config, epoch, pipeline)
 
                 # Log grid images to WandB
                 if config.use_wandb:
                     wandb.log({
-                        "validation/grid_images": wandb.Image(image_grid), 
+                        "validation/grid_images": wandb.Image(image_grid),
                         "validation/epoch": epoch
                     })
 
                 # Calculate FID if validation dataset is available
                 if val_dataloader:
                     print(f"Calculating FID score at epoch {epoch + 1}...")
-                    
+
                     if is_conditional and val_attributes is not None:
                         # Move validation attributes to correct device
                         val_attributes = val_attributes.to(accelerator.device)
-                        # Use attribute-specific FID calculation
-                        fid_score = generate_and_calculate_fid_attributes(
-                            pipeline=pipeline,
-                            val_dataloader=val_dataloader,
-                            device=accelerator.device,
-                            preprocess=preprocess,
-                            num_train_timesteps=config.num_train_timesteps,
-                            num_samples=config.val_n_samples,
-                            attributes=val_attributes
-                        )
+                        if config.use_segmentation:
+                            # Compute FID for attribute+segmentation case
+                            fid_score = generate_and_calculate_fid_attr_seg(
+                                pipeline=pipeline,
+                                val_dataloader=val_dataloader,
+                                device=accelerator.device,
+                                preprocess=preprocess,
+                                num_train_timesteps=config.num_train_timesteps,
+                                num_samples=config.val_n_samples,
+                                attributes=val_attributes
+                            )
+                        else:
+                            # Use attribute-specific FID calculation
+                            fid_score = generate_and_calculate_fid_attributes(
+                                pipeline=pipeline,
+                                val_dataloader=val_dataloader,
+                                device=accelerator.device,
+                                preprocess=preprocess,
+                                num_train_timesteps=config.num_train_timesteps,
+                                num_samples=config.val_n_samples,
+                                attributes=val_attributes
+                            )
                     else:
                         # Use standard FID calculation for unconditional model
                         fid_score = generate_and_calculate_fid(
@@ -257,12 +281,13 @@ def train_loop(
                             num_train_timesteps=config.num_train_timesteps,
                             num_samples=config.val_n_samples
                         )
+
                     print(f"FID Score: {fid_score:.2f}")
-                    
+
                     # Log to WandB
                     if config.use_wandb:
                         wandb.log({"validation/fid_score": fid_score})
-                        
+
                     # Save best model if FID score improves
                     if fid_score < best_fid_score:
                         best_fid_score = fid_score
@@ -294,4 +319,3 @@ def train_loop(
                 }, os.path.join(config.output_dir, "optimizer", "optimizer.pth"))
                 if ema:
                     torch.save(ema.state_dict(), os.path.join(config.output_dir, "ema.pt"))
-

@@ -8,7 +8,6 @@ from typing import Optional, List
 import torch
 from omegaconf import OmegaConf, DictConfig
 
-
 def str2bool(v):
     """Convert string to boolean."""
     if isinstance(v, bool):
@@ -20,15 +19,14 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
-
 @dataclass
 class TrainingConfig:
     """Configuration for training diffusion models."""
-    
+
     # Model configuration
     model: str = "unet_notebook"  # Type of model to use (e.g., "unet_notebook")
-    cross_attention_dim: int = 512  # Total dim: attribute + segmentation
-    
+    cross_attention_dim: int = 128  # Total dim: attribute + segmentation
+
     # Training configuration
     run_name: Optional[str] = None  # Name for the run. To be used for WandB run name and output directory name
     image_size: int = 256  # the generated image resolution
@@ -55,12 +53,19 @@ class TrainingConfig:
     # Conditional generation parameters
     sample_attributes: Optional[torch.Tensor] = None  # Attribute vectors for sample generation
     is_conditional: bool = False  # Whether to use conditional generation
+    conditioning_type: str = "attribute"  # or "segmentation"
     attribute_file: Optional[str] = None  # Path to the attribute labels file
     segmentation_dir: Optional[str] = None  # Directory with segmentation masks
     num_attributes: int = 40  # Number of attributes (e.g., 40 for CelebA)
     use_embedding_loss: bool = False  # Whether to calculate embedding loss
     embedding_loss_lambda: float = 1.0  # Lambda for embedding loss
+    conditioning_type: Optional[str] = None  # 'segmentation' or 'attribute'
+    segmentation_encoder: Optional[str] = None  # Segmentation encoder name
+    segmentation_encoder_checkpoint: Optional[str] = None  # Checkpoint for pretrained segmentation encoder
+    use_segmentation: bool = False  # Whether to use segmentation conditioning
     
+
+
     # Grid visualization parameters
     grid_attribute_indices: Optional[List[int]] = None  # Specific attributes for grid visualization
     grid_num_samples: int = 16  # Number of samples in the visualization grid
@@ -84,11 +89,11 @@ class TrainingConfig:
             print(f"No run_name provided, using dataset name: {self.run_name}")
         # Always add timestamp to run_name
         self.run_name += f"_{timestamp}"
-    
+
         # Set output_dir if not provided
         if not self.root_output_dir:
             self.root_output_dir = "checkpoints"
-        
+
         # If the root_output_dir is on scratch, make the directory and set the permissions
         if self.root_output_dir.startswith("/scratch/group_5"):
             # Change mode of root_output_dir to 700
@@ -106,7 +111,7 @@ class TrainingConfig:
         if not self.val_dir or not os.path.exists(self.val_dir):
             # Warn the user that the validation directory does not exist
             print(f"Warning: Validation directory not inputted or not found: {self.val_dir}")
-            
+
         # Set up conditional generation parameters
         if self.is_conditional:
             if not self.attribute_file or not os.path.exists(self.attribute_file):
@@ -114,7 +119,7 @@ class TrainingConfig:
             if self.grid_attribute_indices is None:
                 print("No grid_attribute_indices provided, using default: [20] for Male attribute")
                 self.grid_attribute_indices = [20]  # Just use Male attribute for clearer results
-
+        self.use_segmentation = self.conditioning_type == "segmentation"
 
 def parse_args() -> TrainingConfig:
     """Support CLI, YAML, and override-style configs with full compatibility."""
@@ -124,12 +129,26 @@ def parse_args() -> TrainingConfig:
     parser.add_argument("--config", type=str, help="Path to YAML config file")
     parser.add_argument("--override", nargs=argparse.REMAINDER, help="Overrides in key=value format")
 
-    # === Manually defined CLI args (exactly as you had) ===
-    defaults = {field: TrainingConfig.__dataclass_fields__[field].default
-            for field in TrainingConfig.__dataclass_fields__}
+    args = parser.parse_args()
 
-    defaults["output_dir"] = None
-    defaults["run_name"] = None
+    # Step 1: Start with CLI args
+    cli_config = vars(args)
+
+    # Step 2: Load YAML config if provided
+    if args.config:
+        yaml_config = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
+        cli_config.update(yaml_config)
+
+    # Step 3: Apply any CLI override key=value
+    if args.override:
+        override_cfg = OmegaConf.from_dotlist(args.override)
+        cli_config = OmegaConf.merge(cli_config, override_cfg)
+
+    # Remove non-model args (helper-only)
+    cli_config.pop("config", None)
+    cli_config.pop("override", None)
+
+    return TrainingConfig(**cli_config)
 
     # Add arguments for each config field with help text
     parser.add_argument("--model", type=str, default=defaults["model"],
