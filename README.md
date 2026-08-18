@@ -9,6 +9,22 @@ This repository contains an implementation of diffusion models for image generat
   <img src="docs/generated-faces.gif" alt="Generated Human Faces" width="512"/>
 </p>
 
+### Project Highlights
+
+- Implemented and trained diffusion models for human-face generation using CelebA-HQ
+- Supported DDPM and DDIM sampling for image generation
+- Implemented conditional generation using facial attributes
+- Built PyTorch-based training and inference pipelines
+- Used Hugging Face Accelerate for mixed-precision and distributed training
+- Evaluated generated images using FID and retained the best-performing checkpoint
+- Integrated Weights & Biases for experiment tracking
+- Built a Gradio interface for interactive image generation
+
+### Tech Stack
+
+`Python` · `PyTorch` · `Diffusers` · `Hugging Face Accelerate` ·
+`Weights & Biases` · `Gradio` · `NumPy` · `CelebA-HQ`
+
 ### Table of Contents
 
 1. [Project Overview](#1-project-overview)
